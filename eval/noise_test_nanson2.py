@@ -1,5 +1,6 @@
 import numpy as np
 import pyrqt
+import sys
 
 def make_tensor(P1,P2,P3,P4):
     T = np.zeros(16)
@@ -52,7 +53,7 @@ def camera_error_modulo_flips(PP_est,PP_gt):
     
 def camera_rotation_error(PP_est,PP_gt):
     err = 10000
-    for z in [-1,1]:
+    for z in [-1,1]:        
         H = np.diag([1,1,z,1])
 
         cur_err = 0
@@ -71,15 +72,25 @@ def camera_rotation_error(PP_est,PP_gt):
                 Rgt = np.stack([r1gt, r2gt, -np.cross(r1gt, r2gt)])
 
 
-            Rdiff = Rgt.T @ R
+            Rdiff = Rgt.T @ R 
+            #print(R)
+            #print(Rgt)
             cs = (Rdiff.trace()-1)/2
             if(cs > 1):
                 cs = 1
             elif cs < -1:
                 cs = -1
+            #print(cs)
+            #print()
+            #print(Rdiff)
+            #print((Rdiff.trace()-1)/2)
             cur_err = np.max([cur_err, np.arccos(cs)])
+            #print((Rdiff.trace()-1)/2)
+            #print(cur_err)
+        #print(cur_err)
 
-        err = np.min([err, cur_err])
+
+        err = np.min([err, cur_err])         
     return err
 
 def translation_dist(P1, P2):
@@ -113,10 +124,10 @@ def camera_translation_error(PP_est,PP_gt):
         err = np.min([err, c_err])
     return err
 
-
+    
 
 def setup_synthetic_scene():
-    X = np.random.rand(15,3)
+    X = np.random.rand(13,3)
     X = 2*(X - 0.5)
 
     c1 = np.random.randn(3)
@@ -200,33 +211,87 @@ def setup_synthetic_scene():
     return (xx, PP, X)
 
 
+base_noise = 0.001
+num_iters = 10000
+for n in range(51):
+    #print(n/5)
+    noise = n/5
 
-for x in range(100000):
-    xx, PP_gt, X = setup_synthetic_scene()
+    ex_pose = 0
+    avg_cam_err = 0
+    avg_rot_err = 0
+    avg_tran_err = 0
+    avg_succ_cam_err = 0
+    avg_succ_rot_err = 0
+    avg_succ_tran_err = 0
+    AUC5 = 0
+    AUC10 = 0
+    AUC20 = 0
+    AUC_T1 = 0
+    AUC_T5 = 0
+    AUC_T10 = 0
 
-    T_gt = make_tensor(PP_gt[0], PP_gt[1], PP_gt[2], PP_gt[3])
+    for x in range(num_iters):
+        if(x%100==0):
+            print(str(n)+" "+str(x), file=sys.stderr)
+        xx, PP_gt, X = setup_synthetic_scene()
+        xx_orig = xx
+        xx0 = xx[0] + noise*base_noise*np.random.randn(13,2)
+        xx1 = xx[1] + noise*base_noise*np.random.randn(13,2)
+        xx2 = xx[2] + noise*base_noise*np.random.randn(13,2)
+        xx3 = xx[3] + noise*base_noise*np.random.randn(13,2)
+        xx = [xx0,xx1,xx2,xx3]
 
-    out = pyrqt.calibrated_radial_quadrifocal_solver(xx[0], xx[1], xx[2], xx[3], {"solver": "LINEAR"})
-    err_T = [np.min([np.linalg.norm(T - T_gt), np.linalg.norm(T + T_gt)]) for T in out['QFs']]
+        T_gt = make_tensor(PP_gt[0], PP_gt[1], PP_gt[2], PP_gt[3])
 
-    err_P = []
-    err_R = []
-    err_T = []
-    for i in range(out['valid']):
-        P1 = out['P1'][i]
-        P2 = out['P2'][i]
-        P3 = out['P3'][i]
-        P4 = out['P4'][i]
+        out = pyrqt.calibrated_radial_quadrifocal_solver(xx[0], xx[1], xx[2], xx[3], {"solver": "NANSON2"})
+        err_T = [np.min([np.linalg.norm(T - T_gt), np.linalg.norm(T + T_gt)]) for T in out['QFs']]
 
-        err_P.append(camera_error_modulo_flips([P1,P2,P3,P4], PP_gt))
-        err_R.append(camera_rotation_error([P1,P2,P3,P4], PP_gt))
-        err_T.append(camera_translation_error([P1,P2,P3,P4], PP_gt))
 
-    if(len(err_P)>0):
-        print(str(min(err_P))+" "+str(min(err_R))+" "+str(min(err_T)))
+        err_P = []
+        err_R = []
+        err_T = []
+        for i in range(out['valid']):
+            P1 = out['P1'][i]
+            P2 = out['P2'][i]
+            P3 = out['P3'][i]
+            P4 = out['P4'][i]
+
+            err_P.append(camera_error_modulo_flips([P1,P2,P3,P4], PP_gt))
+            err_R.append(camera_rotation_error([P1,P2,P3,P4], PP_gt))
+            err_T.append(camera_translation_error([P1,P2,P3,P4], PP_gt))
+        if len(err_P) > 0:
+            ex_pose += 1
+            avg_cam_err += min(err_P)
+            avg_rot_err += min(err_R)
+            avg_tran_err += min(err_T)
+            avg_succ_cam_err += min(err_P)
+            avg_succ_rot_err += min(err_R)
+            avg_succ_tran_err += min(err_T)
+            if(180*min(err_R)/3.141592654 < 5):
+                AUC5 += 1
+            if(180*min(err_R)/3.141592654 < 10):
+                AUC10 += 1
+            if(180*min(err_R)/3.141592654 < 20):
+                AUC20 += 1
+            if(min(err_T) < 0.01):
+                AUC_T1 += 1
+            if(min(err_T) < 0.05):
+                AUC_T5 += 1
+            if(min(err_T) < 0.1):
+                AUC_T10 += 1
+        else:
+            #print("NO RESULT")
+            avg_cam_err += 10
+            avg_rot_err += 3.141592654
+            avg_tran_err += 3.141592654
+            pass
+
+    #print("AUC10: "+str(AUC10))
+    if(ex_pose > 0):
+        print(str(noise)+" "+str(ex_pose/num_iters)+" "+str(avg_cam_err/num_iters)+" "+str(180*avg_rot_err/(3.141592654*num_iters))+" "+str(avg_tran_err/num_iters)+" "+str(avg_succ_cam_err/ex_pose)+" "+str(180*avg_succ_rot_err/(3.141592654*ex_pose))+" "+str(avg_succ_tran_err/ex_pose)+" "+str(AUC5/num_iters)+" "+str(AUC10/num_iters)+" "+str(AUC20/num_iters)+" "+str(AUC_T1/num_iters)+" "+str(AUC_T5/num_iters)+" "+str(AUC_T10/num_iters))
     else:
-        print("1 3.14 3.14")
-
+        print(str(noise)+" "+str(ex_pose/num_iters)+" "+str(avg_cam_err/num_iters)+" "+str(180*avg_rot_err/(3.141592654*num_iters))+" "+str(avg_tran_err/num_iters)+" "+str(10)+" "+str(180)+" "+str(3.141592654)+" "+str(AUC5/num_iters)+" "+str(AUC10/num_iters)+" "+str(AUC20/num_iters)+" "+str(AUC_T1/num_iters)+" "+str(AUC_T5/num_iters)+" "+str(AUC_T10/num_iters))
 
 
 
